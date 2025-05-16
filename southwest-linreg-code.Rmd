@@ -1,0 +1,466 @@
+---
+title: "wefiuh"
+output: html_document
+date: "2025-04-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{R}
+library(tree)
+library(randomForestSRC)
+library(forecast)
+library(readxl)
+library(Metrics)  
+
+```
+
+```{r}
+
+southwest_filtered = read.csv("/Users/clementlee/Desktop/Data/southwest_filtered.csv")
+
+RNGkind(kind='Mersenne-Twister', normal.kind='Inversion', sample.kind='Rounding')
+set.seed(1)
+
+southwest_filtered <- southwest_filtered[order(southwest_filtered$FL_DATE), ]
+
+split_index <- floor(0.8 * nrow(southwest_filtered))
+
+train_df <- southwest_filtered[1:split_index, ]
+test_df  <- southwest_filtered[(split_index + 1):nrow(southwest_filtered), ]
+
+```
+
+```{r}
+linear_model <- lm(
+  ARR_DELAY ~ CRS_DEP_TIME + CRS_ARR_TIME + FL_NUMBER + ORIGIN + DEST + DISTANCE,
+  data = train_df
+)
+
+summary(linear_model)
+
+```
+
+```{r}
+library(forecast)
+pred <- predict(linear_model, newdata = test_df)
+
+rmse <- sqrt(mean((pred - test_df$ARR_DELAY)^2, na.rm = TRUE))
+
+mae <- mean(abs(pred - test_df$ARR_DELAY), na.rm = TRUE)
+
+me <- mean(pred - test_df$ARR_DELAY, na.rm = TRUE)
+
+mape <- mean(abs((test_df$ARR_DELAY - pred) / test_df$ARR_DELAY), na.rm = TRUE) * 100
+
+sse <- sum((test_df$ARR_DELAY - pred)^2, na.rm = TRUE)
+sst <- sum((test_df$ARR_DELAY - mean(test_df$ARR_DELAY, na.rm = TRUE))^2, na.rm = TRUE)
+rsq <- 1 - sse/sst
+
+cat("Mean Error (ME):", me, "\n")
+cat("Mean Absolute Error (MAE):", mae, "\n")
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+cat("Mean Absolute Percentage Error (MAPE):", mape, "%\n")
+cat("R-squared (Test Set):", rsq, "\n")
+
+```
+
+```{R}
+
+pred <- predict(linear_model, newdata = test_df)
+
+# Plot actual vs predicted
+plot(
+  test_df$ARR_DELAY, pred,
+  xlab = "Actual Arrival Delay",
+  ylab = "Predicted Arrival Delay",
+  main = "Actual vs Predicted Arrival Delays",
+  pch = 19, col = rgb(0.2, 0.4, 0.6, 0.4)
+)
+abline(0, 1, col = "red", lwd = 2)
+
+```
+
+```{r}
+
+#Cost Function
+
+calculate_baseline_cost <- function(arr_delay) {
+  cost <- ifelse(
+    arr_delay > 0 & arr_delay < 60,
+    arr_delay * 101,
+    ifelse(
+      arr_delay >= 60 & arr_delay < 300,
+      arr_delay * 192,
+      ifelse(arr_delay >= 300,
+             arr_delay * 250,
+             0) # If arr_delay <= 0, cost is 0
+    )
+  )
+  return(cost)
+}
+
+calculate_smart_savings_cost <- function(actual_delay, predicted_delay, actual_cost, discount = 0.3) {
+  
+  calc_cost <- function(delay) {
+    if (delay > 0 & delay < 60) {
+      return(delay * 101)
+    } else if (delay >= 60 & delay < 300) {
+      return(delay * 192)
+    } else if (delay >= 300) {
+      return(delay * 250)
+    } else {
+      return(0)
+    }
+  }
+  
+  n <- length(actual_delay)
+  smart_cost <- numeric(n)
+  
+  for (i in 1:n) {
+    act <- actual_delay[i]
+    pred <- predicted_delay[i]
+    cost_act <- actual_cost[i]
+    
+    if (is.na(act) || is.na(pred) || is.na(cost_act)) {
+      smart_cost[i] <- NA
+      next
+    }
+    
+    
+    if (act == pred) {
+      smart_cost[i] <- cost_act * (1 - discount)
+      
+  
+    } else if (act > 0 && pred >= 0 && pred < act) {
+      pred_cost <- calc_cost(pred)
+      smart_cost[i] <- (pred_cost * (1 - discount)) + (cost_act - pred_cost)
+      
+
+    } else if (act > 0 && pred > act) {
+      extra_pred_cost <- calc_cost(pred) - cost_act
+      smart_cost[i] <- (cost_act * (1 - discount)) + (extra_pred_cost * discount)
+      
+
+    } else if (act < 0 && pred > 0) {
+      pred_cost <- calc_cost(pred)
+      smart_cost[i] <- pred_cost * discount
+      
+
+    } else if (act < 0 && pred < 0) {
+
+      smart_cost[i] <- cost_act
+      
+    } else {
+      # fallback (e.g., actual = 0)
+      smart_cost[i] <- cost_act
+    }
+  }
+  return(smart_cost)
+}
+```
+
+```{r}
+baseline_cost_vec <- calculate_baseline_cost(test_df$ARR_DELAY)
+baseline_cost <- sum(baseline_cost_vec)
+cat("Baseline Total Cost:", baseline_cost, "\n")
+
+smart_cost_vec <- calculate_smart_savings_cost(
+  actual_delay    = test_df$ARR_DELAY,
+  predicted_delay = pred,
+  actual_cost     = baseline_cost_vec
+)
+smart_cost <- sum(smart_cost_vec, na.rm = TRUE)
+cat("Smart Savings Total Cost:", smart_cost, "\n")
+
+savings <- baseline_cost - smart_cost
+cat("Total Savings vs. Baseline:", savings, "\n")
+
+
+```
+
+```{r}
+
+library(MASS)
+library(Metrics)
+
+# Load and prepare data
+southwest_filtered <- read.csv("/Users/clementlee/Desktop/Data/southwest_filtered.csv")
+
+RNGkind(kind='Mersenne-Twister', normal.kind='Inversion', sample.kind='Rounding')
+set.seed(1)
+
+southwest_filtered <- southwest_filtered[order(southwest_filtered$FL_DATE), ]
+
+split_index <- floor(0.8 * nrow(southwest_filtered))
+train_df <- southwest_filtered[1:split_index, ]
+test_df  <- southwest_filtered[(split_index + 1):nrow(southwest_filtered), ]
+
+min_delay <- min(train_df$ARR_DELAY, na.rm = TRUE)
+shift_value <- if (min_delay <= 0) abs(min_delay) + 1 else 0
+train_df$ARR_DELAY_shifted <- train_df$ARR_DELAY + shift_value
+
+BC <- boxcox(ARR_DELAY_shifted ~ CRS_DEP_TIME + CRS_ARR_TIME + FL_NUMBER + ORIGIN + DEST + DISTANCE,
+             data = train_df)
+lambda_opt <- BC$x[which.max(BC$y)]
+print(paste("Optimal lambda:", lambda_opt))
+
+y_BC <- log(train_df$ARR_DELAY_shifted)
+reg_BC <- lm(y_BC ~ CRS_DEP_TIME + CRS_ARR_TIME + FL_NUMBER + ORIGIN + DEST + DISTANCE,
+             data = train_df)
+
+test_df$ARR_DELAY_shifted <- test_df$ARR_DELAY + shift_value
+log_preds <- predict(reg_BC, newdata = test_df)
+pred <- exp(log_preds) - shift_value  
+
+rmse_result <- rmse(test_df$ARR_DELAY, pred)
+print(paste("RMSE after Box-Cox/log:", round(rmse_result, 2)))
+
+plot(reg_BC$fitted.values, reg_BC$residuals,
+     xlab='Fitted log(arrival delay)', ylab='Residuals',
+     main='Residuals vs Fitted log(ARR_DELAY)',
+     xlim=range(reg_BC$fitted.values), ylim=range(reg_BC$residuals))
+abline(h=0, col="red")
+smoother <- data.frame(fitted = reg_BC$fitted.values, resid = reg_BC$residuals)
+smoother <- smoother[order(smoother$fitted), ]
+loess_fit <- loess(resid ~ fitted, data = smoother)
+lines(loess_fit$x, loess_fit$fitted, col='blue', lwd=2)
+
+calculate_baseline_cost <- function(arr_delay) {
+  cost <- ifelse(
+    arr_delay > 0 & arr_delay < 60,
+    arr_delay * 101,
+    ifelse(
+      arr_delay >= 60 & arr_delay < 300,
+      arr_delay * 192,
+      ifelse(arr_delay >= 300,
+             arr_delay * 250,
+             0)
+    )
+  )
+  return(cost)
+}
+
+calculate_smart_savings_cost <- function(actual_delay, predicted_delay, actual_cost, discount = 0.3) {
+  calc_cost <- function(delay) {
+    if (delay > 0 & delay < 60) {
+      return(delay * 101)
+    } else if (delay >= 60 & delay < 300) {
+      return(delay * 192)
+    } else if (delay >= 300) {
+      return(delay * 250)
+    } else {
+      return(0)
+    }
+  }
+
+  n <- length(actual_delay)
+  smart_cost <- numeric(n)
+
+  for (i in 1:n) {
+    act <- actual_delay[i]
+    pred <- predicted_delay[i]
+    cost_act <- actual_cost[i]
+
+    if (is.na(act) || is.na(pred) || is.na(cost_act)) {
+      smart_cost[i] <- NA
+      next
+    }
+
+    if (act == pred) {
+      smart_cost[i] <- cost_act * (1 - discount)
+    } else if (act > 0 && pred >= 0 && pred < act) {
+      pred_cost <- calc_cost(pred)
+      smart_cost[i] <- (pred_cost * (1 - discount)) + (cost_act - pred_cost)
+    } else if (act > 0 && pred > act) {
+      extra_pred_cost <- calc_cost(pred) - cost_act
+      smart_cost[i] <- (cost_act * (1 - discount)) + (extra_pred_cost * discount)
+    } else if (act < 0 && pred > 0) {
+      pred_cost <- calc_cost(pred)
+      smart_cost[i] <- pred_cost * discount
+    } else if (act < 0 && pred < 0) {
+      smart_cost[i] <- cost_act
+    } else {
+      smart_cost[i] <- cost_act
+    }
+  }
+  return(smart_cost)
+}
+
+baseline_cost_vec <- calculate_baseline_cost(test_df$ARR_DELAY)
+smart_cost_vec <- calculate_smart_savings_cost(test_df$ARR_DELAY, pred, baseline_cost_vec)
+
+baseline_total <- sum(baseline_cost_vec, na.rm = TRUE)
+smart_total <- sum(smart_cost_vec, na.rm = TRUE)
+num_flights <- nrow(test_df)
+
+baseline_cost_per_flight <- baseline_total / num_flights
+smart_cost_per_flight <- smart_total / num_flights
+savings_per_flight <- baseline_cost_per_flight - smart_cost_per_flight
+
+cat("Baseline Cost per Flight:", round(baseline_cost_per_flight, 2), "\n")
+cat("Smart Savings Cost per Flight:", round(smart_cost_per_flight, 2), "\n")
+cat("Savings per Flight vs. Baseline:", round(savings_per_flight, 2), "\n")
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+
+numeric_vars <- train_df %>%
+  select(where(is.numeric))
+
+
+cor_matrix <- cor(numeric_vars, use = "pairwise.complete.obs")
+
+
+cor_long <- melt(cor_matrix)
+
+
+ggplot(cor_long, aes(x = Var2, y = Var1, fill = value)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(value, 2)), size = 3) +
+  scale_fill_gradient2(
+    low = "blue", mid = "white", high = "red", midpoint = 0,
+    limit = c(-1, 1), name = "Correlation"
+  ) +
+  labs(
+    title = "Correlation Heatmap of Numeric Variables",
+    x = "", y = ""
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+
+
+```
+
+```{r}
+
+num_flights <- nrow(test_df)
+
+
+baseline_cost_per_flight <- baseline_cost / num_flights
+smart_cost_per_flight <- smart_cost / num_flights
+savings_per_flight <- savings / num_flights
+
+
+cat("Baseline Cost per Flight:", round(baseline_cost_per_flight, 2), "\n")
+cat("Smart Savings Cost per Flight:", round(smart_cost_per_flight, 2), "\n")
+cat("Savings per Flight vs. Baseline:", round(savings_per_flight, 2), "\n")
+
+
+```
+
+```{#Inverse Box-Cox}
+
+{r}
+library(MASS)
+library(Metrics)
+
+southwest_filtered <- read.csv("/Users/clementlee/Desktop/Data/southwest_filtered.csv")
+RNGkind(kind='Mersenne-Twister', normal.kind='Inversion', sample.kind='Rounding')
+set.seed(1)
+southwest_filtered <- southwest_filtered[order(southwest_filtered$FL_DATE), ]
+
+split_index <- floor(0.8 * nrow(southwest_filtered))
+train_df <- southwest_filtered[1:split_index, ]
+test_df  <- southwest_filtered[(split_index + 1):nrow(southwest_filtered), ]
+
+min_delay <- min(train_df$ARR_DELAY, na.rm = TRUE)
+shift_value <- if (min_delay <= 0) abs(min_delay) + 1 else 0
+train_df$ARR_DELAY_shifted <- train_df$ARR_DELAY + shift_value
+
+BC <- boxcox(ARR_DELAY_shifted ~ CRS_DEP_TIME + CRS_ARR_TIME + FL_NUMBER + ORIGIN + DEST + DISTANCE,
+             data = train_df)
+lambda_opt <- BC$x[which.max(BC$y)]
+print(paste("Optimal lambda:", lambda_opt))
+
+
+y_BC <- (train_df$ARR_DELAY_shifted^lambda_opt - 1) / lambda_opt
+reg_BC <- lm(y_BC ~ CRS_DEP_TIME + CRS_ARR_TIME + FL_NUMBER + ORIGIN + DEST + DISTANCE,
+             data = train_df)
+
+test_df$ARR_DELAY_shifted <- test_df$ARR_DELAY + shift_value
+bc_preds <- predict(reg_BC, newdata = test_df)
+pred <- (lambda_opt * bc_preds + 1)^(1 / lambda_opt) - shift_value
+
+rmse_result <- rmse(test_df$ARR_DELAY, pred)
+print(paste("RMSE after Box-Cox (λ =", round(lambda_opt, 3), "):", round(rmse_result, 2)))
+
+plot(reg_BC$fitted.values, reg_BC$residuals,
+     xlab='Fitted (Box-Cox transformed)', ylab='Residuals',
+     main='Residuals vs Fitted (Box-Cox)',
+     xlim=range(reg_BC$fitted.values), ylim=range(reg_BC$residuals))
+abline(h=0, col="red")
+smoother <- data.frame(fitted = reg_BC$fitted.values, resid = reg_BC$residuals)
+smoother <- smoother[order(smoother$fitted), ]
+loess_fit <- loess(resid ~ fitted, data = smoother)
+lines(loess_fit$x, loess_fit$fitted, col='blue', lwd=2)
+
+calculate_baseline_cost <- function(arr_delay) {
+  cost <- ifelse(
+    arr_delay > 0 & arr_delay < 60, arr_delay * 101,
+    ifelse(arr_delay >= 60 & arr_delay < 300, arr_delay * 192,
+           ifelse(arr_delay >= 300, arr_delay * 250, 0))
+  )
+  return(cost)
+}
+
+calculate_smart_savings_cost <- function(actual_delay, predicted_delay, actual_cost, discount = 0.3) {
+  calc_cost <- function(delay) {
+    if (delay > 0 & delay < 60) return(delay * 101)
+    else if (delay >= 60 & delay < 300) return(delay * 192)
+    else if (delay >= 300) return(delay * 250)
+    else return(0)
+  }
+  n <- length(actual_delay)
+  smart_cost <- numeric(n)
+  for (i in 1:n) {
+    act <- actual_delay[i]; pred <- predicted_delay[i]; cost_act <- actual_cost[i]
+    if (is.na(act) || is.na(pred) || is.na(cost_act)) {
+      smart_cost[i] <- NA
+      next
+    }
+    if (act == pred) {
+      smart_cost[i] <- cost_act * (1 - discount)
+    } else if (act > 0 && pred >= 0 && pred < act) {
+      pred_cost <- calc_cost(pred)
+      smart_cost[i] <- (pred_cost * (1 - discount)) + (cost_act - pred_cost)
+    } else if (act > 0 && pred > act) {
+      extra_pred_cost <- calc_cost(pred) - cost_act
+      smart_cost[i] <- (cost_act * (1 - discount)) + (extra_pred_cost * discount)
+    } else if (act < 0 && pred > 0) {
+      pred_cost <- calc_cost(pred)
+      smart_cost[i] <- pred_cost * discount
+    } else {
+      smart_cost[i] <- cost_act
+    }
+  }
+  return(smart_cost)
+}
+
+baseline_cost_vec <- calculate_baseline_cost(test_df$ARR_DELAY)
+smart_cost_vec <- calculate_smart_savings_cost(test_df$ARR_DELAY, pred, baseline_cost_vec)
+
+baseline_total <- sum(baseline_cost_vec, na.rm = TRUE)
+smart_total <- sum(smart_cost_vec, na.rm = TRUE)
+num_flights <- nrow(test_df)
+
+baseline_cost_per_flight <- baseline_total / num_flights
+smart_cost_per_flight <- smart_total / num_flights
+savings_per_flight <- baseline_cost_per_flight - smart_cost_per_flight
+
+cat("Baseline Cost per Flight:", round(baseline_cost_per_flight, 2), "\n")
+cat("Smart Savings Cost per Flight:", round(smart_cost_per_flight, 2), "\n")
+cat("Savings per Flight vs. Baseline:", round(savings_per_flight, 2), "\n")
+
+
+
+```
